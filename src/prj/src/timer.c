@@ -24,8 +24,8 @@
 #define TCSR_ENALL  BIT(10)
 #define TCSR_CASC   BIT(11)
 
-/* Timer0: auto-reload, count-down, generate, interrupt enabled */
-#define TCSR0_DEFAULT  (TCSR_ENIT | TCSR_ARHT | TCSR_GENT | TCSR_UDT)
+/* Timer0: free-running up counter, no interrupt */
+#define TCSR0_DEFAULT  (TCSR_ARHT | TCSR_GENT)
 /* Timer1: count-down, generate, interrupt enabled (one-shot alarm) */
 #define TCSR1_DEFAULT  (TCSR_ENIT | TCSR_GENT | TCSR_UDT)
 
@@ -44,29 +44,18 @@ static void timer_isr(void *args)
 	struct timer *timer = (struct timer *)args;
 	u32 tcsr;
 
-	if (timer->has_alarm) {
-		tcsr = timer_read(timer, TCSR1_OFFSET);
-		if (tcsr & TCSR_TINT) {
-			/* W1C: clear TINT and reset control bits to default */
-			timer_write(timer, TCSR1_DEFAULT | TCSR_TINT, TCSR1_OFFSET);
+	tcsr = timer_read(timer, TCSR1_OFFSET);
+	if (!(tcsr & TCSR_TINT))
+		return;
 
-			if (timer->alarm.callback) {
-				u32 now = timer_read(timer, TCR0_OFFSET);
-				void (*cb)(struct timer *, u32, void *) = timer->alarm.callback;
-				timer->alarm.callback = NULL;
-				cb(timer, now, timer->alarm.user_data);
-			}
-		}
-	}
+	/* W1C: clear TINT and reset control bits to default */
+	timer_write(timer, TCSR1_DEFAULT | TCSR_TINT, TCSR1_OFFSET);
 
-	tcsr = timer_read(timer, TCSR0_OFFSET);
-	if (tcsr & TCSR_TINT) {
-		/* W1C: writing back tcsr with TINT=1 clears the interrupt */
-		timer_write(timer, tcsr, TCSR0_OFFSET);
-		atomic_fetch_add_explicit(&timer->ticks, 1, memory_order_relaxed);
-
-		if (timer->top_callback)
-			timer->top_callback(timer, timer->top_user_data);
+	if (timer->alarm.callback) {
+		u32 now = timer_read(timer, TCR0_OFFSET);
+		void (*cb)(struct timer *, u32, void *) = timer->alarm.callback;
+		timer->alarm.callback = NULL;
+		cb(timer, now, timer->alarm.user_data);
 	}
 }
 
@@ -75,17 +64,13 @@ int timer_init(struct timer *timer, u32 base, u32 freq, int irq, bool has_alarm)
 	if (!timer || !freq)
 		return -EINVAL;
 
-	timer->base          = base;
-	timer->freq          = freq;
-	timer->has_alarm     = has_alarm;
-	timer->top_callback  = NULL;
-	timer->top_user_data = NULL;
+	timer->base            = base;
+	timer->freq            = freq;
+	timer->has_alarm       = has_alarm;
 	timer->alarm.callback  = NULL;
 	timer->alarm.user_data = NULL;
-	atomic_init(&timer->ticks, 0);
-
-	/* Load max top value and reset timer0, leave stopped */
-	timer_write(timer, UINT32_MAX, TLR0_OFFSET);
+	/* Load 0 so counter wraps back to 0 after UINT32_MAX */
+	timer_write(timer, 0, TLR0_OFFSET);
 	timer_write(timer, TCSR0_DEFAULT | TCSR_LOAD, TCSR0_OFFSET);
 	timer_write(timer, TCSR0_DEFAULT, TCSR0_OFFSET);
 
@@ -111,21 +96,6 @@ void timer_stop(struct timer *timer)
 	if (timer->has_alarm)
 		timer_write(timer, TCSR1_DEFAULT, TCSR1_OFFSET);
 	timer_write(timer, TCSR0_DEFAULT, TCSR0_OFFSET);
-}
-
-int timer_set_period(struct timer *timer, u64 period_us)
-{
-	u32 ticks = us_to_ticks(timer, period_us);
-	u32 tcsr;
-
-	if (!ticks)
-		return -EINVAL;
-
-	tcsr = timer_read(timer, TCSR0_OFFSET);
-	timer_write(timer, ticks, TLR0_OFFSET);
-	timer_write(timer, tcsr | TCSR_LOAD, TCSR0_OFFSET);
-	timer_write(timer, tcsr, TCSR0_OFFSET);
-	return 0;
 }
 
 int timer_set_alarm(struct timer *timer, u32 alarm_ticks,
@@ -157,9 +127,4 @@ void timer_cancel_alarm(struct timer *timer)
 	timer_write(timer, TCSR1_DEFAULT, TCSR1_OFFSET);
 	timer->alarm.callback  = NULL;
 	timer->alarm.user_data = NULL;
-}
-
-unsigned long timer_get_ticks(struct timer *timer)
-{
-	return atomic_load_explicit(&timer->ticks, memory_order_relaxed);
 }
