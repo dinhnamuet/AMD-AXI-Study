@@ -2,14 +2,12 @@
 #include "intc.h"
 #include "uart.h"
 #include "timer.h"
+#include "itimer.h"
 #include "xil_printf.h"
 
-static void alarm_cb(struct timer *timer, u32 now, void *args)
+static uint32_t hw_get_tick(void *ctx)
 {
-	struct uartlite *serdev = args;
-
-	uart_poll_out(serdev, "hihi\n", 5);
-	timer_set_alarm(timer, us_to_ticks(timer, 5000000), alarm_cb, serdev);
+	return timer_get_tick((struct timer *)ctx);
 }
 
 int main(void)
@@ -19,13 +17,15 @@ int main(void)
 	struct timer timer;
 
 	intc_init_once(XPAR_MICROBLAZE_0_AXI_INTC_BASEADDR);
-	uart_init(&uart, XPAR_AXI_UARTLITE_0_DEVICE_ID, XPAR_INTC_0_UARTLITE_0_VEC_ID);
 	timer_init(&timer, XPAR_AXI_TIMER_0_BASEADDR, XPAR_TMRCTR_0_CLOCK_FREQ_HZ,
-			XPAR_INTC_0_TMRCTR_0_VEC_ID, true);
-	timer_set_alarm(&timer, us_to_ticks(&timer, 5000000), alarm_cb, &uart);
+			XPAR_INTC_0_TMRCTR_0_VEC_ID, false);
 	timer_start(&timer);
+	itimer_init(hw_get_tick, &timer);
+	uart_init(&uart, XPAR_AXI_UARTLITE_0_DEVICE_ID, XPAR_INTC_0_UARTLITE_0_VEC_ID,
+			us_to_ticks(&timer, 5000));
 
 	while (1) {
+		itimer_process();
 		rx = (u8 *)msgq_peek(&uart_rxq);
 		if (rx) {
 			uart_poll_out(&uart, rx, 10);

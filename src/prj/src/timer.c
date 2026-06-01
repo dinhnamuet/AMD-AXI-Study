@@ -98,6 +98,11 @@ void timer_stop(struct timer *timer)
 	timer_write(timer, TCSR0_DEFAULT, TCSR0_OFFSET);
 }
 
+u32 timer_get_tick(struct timer *timer)
+{
+	return timer_read(timer, TCR0_OFFSET);
+}
+
 int timer_set_alarm(struct timer *timer, u32 alarm_ticks,
 		    void (*cb)(struct timer *, u32, void *), void *user_data)
 {

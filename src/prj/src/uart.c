@@ -28,6 +28,18 @@ MSGQ_DEFINE(uart_rxq, UART_BUF_SIZE_CAL, \
 #define UART_SR_FRAME_ERROR    BIT(6)
 #define UART_SR_PARITY_ERROR   BIT(7)
 
+static void uart_idle_cb(struct itimer_node *n)
+{
+	struct uartlite *uart = container_of(n, struct uartlite, idle_timer);
+
+	if (!uart->rx_pos)
+		return;
+
+	msgq_put_safe(&uart_rxq, uart->rx_buf);
+	uart->rx_pos = 0;
+	compiler_barrier();
+}
+
 static void uart_isr(void *arg)
 {
 	u32 reg_status;
@@ -35,22 +47,19 @@ static void uart_isr(void *arg)
 	struct uartlite *uart_ctx = container_of(uartl, struct uartlite, uart);
 
 	reg_status = io_read32(uartl->RegBaseAddress + UART_STATUS_OFFSET);
-	if (reg_status & (UART_SR_RX_FIFO_VALID | UART_SR_RX_FIFO_FULL)) {
-		if (uart_ctx->rx_pos < UART_BUF_SIZE) {
-			uart_ctx->rx_buf[uart_ctx->rx_pos++] = (u8)io_read32(uartl->RegBaseAddress + UART_RX_FIFO_OFFSET);
-			/* test */
-			if (uart_ctx->rx_pos == 10) {
-				uart_ctx->rx_buf[10] = 0;
-				msgq_put_safe(&uart_rxq, uart_ctx->rx_buf);
-				uart_ctx->rx_pos = 0;
-			}
-		} else {
-			io_read32(uartl->RegBaseAddress + UART_RX_FIFO_OFFSET);
-		}
-	}
+	if (!(reg_status & (UART_SR_RX_FIFO_VALID | UART_SR_RX_FIFO_FULL)))
+		return;
+
+	if (uart_ctx->rx_pos < UART_BUF_SIZE - 1)
+		uart_ctx->rx_buf[uart_ctx->rx_pos++] = (u8)io_read32(uartl->RegBaseAddress + UART_RX_FIFO_OFFSET);
+	else
+		io_read32(uartl->RegBaseAddress + UART_RX_FIFO_OFFSET);
+
+	itimer_stop(&uart_ctx->idle_timer);
+	itimer_start(&uart_ctx->idle_timer);
 }
 
-int uart_init(struct uartlite *uart, u16 uart_id, int irq)
+int uart_init(struct uartlite *uart, u16 uart_id, int irq, uint32_t idle_ticks)
 {
 	int ret;
 
@@ -68,6 +77,7 @@ int uart_init(struct uartlite *uart, u16 uart_id, int irq)
 		return ret;
 
 	uart->rx_pos = 0;
+	itimer_node_init(&uart->idle_timer, idle_ticks, false, uart_idle_cb);
 	io_write32(uart->uart.RegBaseAddress + UART_CTRL_OFFSET, UART_IRQ_ENABLE);
 
 	return 0;

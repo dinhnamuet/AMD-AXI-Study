@@ -20,6 +20,7 @@ struct timer {
 };
 
 int  timer_init(struct timer *timer, u32 base, u32 freq, int irq, bool has_alarm);
+u32  timer_get_tick(struct timer *timer);
 void timer_start(struct timer *timer);
 void timer_stop(struct timer *timer);
 int  timer_set_alarm(struct timer *timer, u32 alarm_ticks,
